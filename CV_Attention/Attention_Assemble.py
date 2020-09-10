@@ -36,22 +36,29 @@ class SELayer(nn.Module):
     func: 实现通道Attention. 
     parameters
     ----------
-    channel: int
+    in_dim: int
     	input的通道数, input.size = (batch,channel,w,h) if batch_first else (channel,batch,,w,h)
     reduction: int
     	默认4. 即在FC的时,存在channel --> channel//reduction --> channel的转换
     batch_first: bool
     	默认True.如input为channel_first，则batch_first = False
     '''
-    def __init__(self, channel,reduction = 2, batch_first = True):
+    def __init__(self,in_dim,reduction = 2, batch_first = True):
         super(SELayer, self).__init__()
         
         self.batch_first = batch_first
+        self.in_dim = in_dim
+        
+        if self.in_dim <= reduction:
+            out_dim = 1
+        else:
+            out_dim = self.in_dim // reduction
+        
         self.avg_pool = nn.AdaptiveAvgPool2d(1) 
         self.fc = nn.Sequential(
-            nn.Linear(channel,channel // reduction, bias = False),
+            nn.Linear(self.in_dim, out_dim, bias = False),
             nn.ReLU(inplace = True),
-            nn.Linear(channel // reduction, channel, bias = False),
+            nn.Linear(out_dim,self.in_dim, bias = False),
             nn.Sigmoid()
             )
         
@@ -76,7 +83,10 @@ class SELayer(nn.Module):
 
         return out 
     
-
+# x = torch.randn(size = (4,1,20,20))  
+# se = SELayer(1)
+# y = se(x)
+# print('y.size:',y.size()) 
 
 #%%
 ####CBAM
@@ -93,7 +103,7 @@ class ChannelAttention(nn.Module):
     batch_first: bool
     	默认True.如input为channel_first，则batch_first = False
     '''
-    def __init__(self,in_channels, reduction = 4, batch_first = True):
+    def __init__(self,in_channels, reduction = 2, batch_first = True):
         
         super(ChannelAttention,self).__init__()
         
@@ -101,10 +111,15 @@ class ChannelAttention(nn.Module):
         self.avg_pool = nn.AdaptiveAvgPool2d(1)
         self.max_pool = nn.AdaptiveMaxPool2d(1)
         
+        if in_channels <= reduction:
+            out_channels = 1
+        else: 
+            out_channels = in_channels // reduction
+            
         self.sharedMLP = nn.Sequential(
-            nn.Conv2d(in_channels, in_channels // reduction, kernel_size = 1, bias = False),
+            nn.Conv2d(in_channels, out_channels, kernel_size = 1, bias = False),
             nn.ReLU(inplace = True),
-            nn.Conv2d(in_channels // reduction, in_channels, kernel_size = 1, bias = False),
+            nn.Conv2d(out_channels, in_channels, kernel_size = 1, bias = False),
             )
         self.sigmoid = nn.Sigmoid()
         
@@ -180,7 +195,7 @@ class CBAtten_Res(nn.Module):
     	默认True.如input为channel_first，则batch_first = False
     '''
     def __init__(self,in_channels,out_channels,kernel_size = 3, 
-                 stride = 2, reduction = 4,batch_first = True):
+                 stride = 1, reduction = 2,batch_first = True):
         
         super(CBAtten_Res,self).__init__()
         
@@ -235,6 +250,84 @@ class CBAtten_Res(nn.Module):
             
         return out
     
+#%%    
+class CBAtten(nn.Module):
+    '''
+    func: channel-attention + spatial-attention
+    parameters
+    ----------
+    in_channels: int
+    	input的通道数, input.size = (batch,in_channels,w,h) if batch_first else (in_channels,batch,,w,h);
+    out_channels: int
+    	输出的通道数
+    kernel_size: int
+    	默认3, 可选[3,5,7]
+    stride: int
+    	默认2, 即改变out.size --> (batch,out_channels,w/stride, h/stride).
+                一般情况下，out_channels = in_channels * stride
+    reduction: int
+    	默认4. 即在通道atten的FC的时,存在in_channels --> in_channels//reduction --> in_channels的转换
+    batch_first: bool
+    	默认True.如input为channel_first，则batch_first = False
+    '''
+    def __init__(self,in_channels,
+                 out_channels = None,kernel_size = 3, 
+                 stride = 1, reduction = 2,batch_first = True):
+        
+        super(CBAtten, self).__init__()
+        
+        self.batch_first = batch_first
+        self.reduction = reduction
+        self.padding = kernel_size // 2
+        
+        if out_channels == None:
+            out_channels = in_channels
+        #h/2, w/2
+        self.max_pool = nn.MaxPool2d(3, stride = stride, padding = self.padding)
+        self.conv_res = nn.Conv2d(in_channels, out_channels,
+                               kernel_size = 1,
+                               stride = 1,
+                               bias = True)
+        
+        
+        #h/2, w/2
+        self.conv1 = nn.Conv2d(in_channels, out_channels,
+                               kernel_size = kernel_size,
+                               stride = stride, 
+                               padding = self.padding,
+                               bias = True)
+        self.bn1 = nn.BatchNorm2d(out_channels) 
+        self.relu = nn.ReLU(inplace = True)
+        self.ca = ChannelAttention(out_channels, reduction = self.reduction,
+                                   batch_first = self.batch_first)
+        
+        self.sa = SpatialAttention(kernel_size = kernel_size,
+                                   batch_first = self.batch_first)
+        
+        
+    def forward(self,x):
+        
+        if not self.batch_first:
+            x = x.permute(1,0,2,3)  #size = (batch,in_channels,w,h)
+        
+        out = self.conv1(x)   #size = (batch,out_channels,w/stride,h/stride)
+        out = self.bn1(out) 
+        out = self.relu(out) 
+        out = self.ca(out)
+        out = self.sa(out)  #size = (batch,out_channels,w/stride,h/stride)
+        
+        out = self.relu(out)  #size = (batch,out_channels,w/stride,h/stride)
+        
+        if not self.batch_first:
+            out = out.permute(1,0,2,3) #size = (out_channels,batch,w/stride,h/stride) 
+            
+        return out
+
+# x = torch.randn(size = (4,8,20,20))  
+# cba = CBAtten(8, 2)
+# y = cba(x)
+# print('y.size:',y.size()) 
+    
 
 #%%
 class SKEConv(nn.Module):
@@ -257,13 +350,19 @@ class SKEConv(nn.Module):
     batch_first: bool 
     	默认True;  
     '''
-    def __init__(self,in_channels, M = 2, G = 2, stride = 1, L = 32, reduction = 2, batch_first = True):
+    def __init__(self,in_channels, 
+                 M = 3, G = 2, stride = 1, L = 32, 
+                 reduction = 2, batch_first = True):
         
         super(SKEConv,self).__init__()
         
         self.M = 2
         self.in_channels = in_channels
         self.batch_first = batch_first
+        
+        if self.in_channels <= G:
+            G = 1
+
         self.convs = nn.ModuleList([])
         for i in range(M):
             self.convs.append(
@@ -276,6 +375,7 @@ class SKEConv(nn.Module):
                     nn.BatchNorm2d(in_channels),
                     nn.ReLU(inplace = True)
                     ))
+        
         
         self.d = max(int(in_channels / reduction), L)
         self.fc = nn.Linear(in_channels, self.d)
@@ -319,6 +419,12 @@ class SKEConv(nn.Module):
                     
         return fea_v
     
+# x = torch.randn(size = (4,1,20,20))  
+# ske = SKEConv(1)
+# y = ske(x)
+# print('y.size:',y.size())     
+
+    
 #%%
 class ECA(nn.Module):
     '''
@@ -334,7 +440,8 @@ class ECA(nn.Module):
         
         super(ECA, self).__init__()
         self.avg_pool = nn.AdaptiveAvgPool2d(1)
-        self.conv = nn.Conv1d(1, 1, kernel_size=k_size, padding=(k_size - 1) // 2, bias=False)
+        
+        self.conv = nn.Conv1d(1, 1, kernel_size = k_size, padding=(k_size - 1) // 2, bias=False)
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
@@ -355,19 +462,27 @@ class ECA(nn.Module):
 
         return x * y.expand_as(x)
     
+# x = torch.randn(size = (4,16,20,20))  
+# eca = ECA(16)
+# y = eca(x)
+# print('y.size:',y.size())   
     
+
 #%%
 class RecoNet(torch.nn.Module):
     '''
-    func:
+    func: 实现RecoNet
     Parameter
     ---------
+    in_dim: int
+        输入的特征图的通道数
     r: int
         重复多少次TGM: 低阶张量生成模块
     '''
-    def __init__(self, r = 64):
+    def __init__(self, in_dim, r = 64):
         super(RecoNet, self).__init__()
-
+        
+        self.in_dim = in_dim
         self.r = r
         self.avg_pool = torch.nn.AdaptiveAvgPool2d(1)
         self.conv = None
@@ -379,6 +494,9 @@ class RecoNet(torch.nn.Module):
         '''
         func: TRM模块,多个r的低阶张量组合
         '''
+        
+        self.parameter_r = self.parameter_r.to(X.device)
+                
         assert len(X.size()) == 4
         batch, channel, height, width = X.size()
         
@@ -402,9 +520,9 @@ class RecoNet(torch.nn.Module):
         assert len(X.size()) == 4
         batch, channel, height, width = X.size()   
                 
-        C_weight = self.TGM_C(self, X)
-        H_weight = self.TGM_C(self, X.permute(0,2,1,3)).permute(0,2,1,3)
-        W_weight = self.TGM_C(self, X.permute(0,3,2,1)).permute(0,3,2,1)
+        C_weight = self.TGM_C(self, X).to(X.device)
+        H_weight = self.TGM_C(self, X.permute(0,2,1,3)).permute(0,2,1,3).to(X.device)
+        W_weight = self.TGM_C(self, X.permute(0,3,2,1)).permute(0,3,2,1).to(X.device)
         
         A = C_weight * H_weight * W_weight  
         
@@ -423,7 +541,7 @@ class RecoNet(torch.nn.Module):
         assert len(X.size()) == 4
         batch, channel, height, width = X.size()
         
-        self.conv = torch.nn.Conv2d(channel, channel, kernel_size = 1)
+        self.conv = torch.nn.Conv2d(channel, channel, kernel_size = 1).to(X.device)
         
         y = self.avg_pool(X)
         y = self.conv(y)
@@ -448,9 +566,11 @@ class Self_Attn_Spatial(nn.Module):
         self.chanel_in = in_dim
         
         self.out_dim = out_dim
-        
-        self.query_conv = nn.Conv2d(in_channels = in_dim , out_channels = out_dim , kernel_size= 1)
-        self.key_conv = nn.Conv2d(in_channels = in_dim , out_channels = out_dim , kernel_size= 1)
+        if self.out_dim < 1:
+            self.out_dim = 1
+
+        self.query_conv = nn.Conv2d(in_channels = in_dim, out_channels = self.out_dim , kernel_size= 1)
+        self.key_conv = nn.Conv2d(in_channels = in_dim , out_channels = self.out_dim , kernel_size= 1)
         self.value_conv = nn.Conv2d(in_channels = in_dim , out_channels = in_dim , kernel_size= 1)
         self.gamma = nn.Parameter(torch.zeros(1), requires_grad = True)
  
@@ -507,15 +627,18 @@ class Self_Attn_Channel(nn.Module):
     out_dim: int 
     	在进行self attention时生成Q,K矩阵的列数, 默认可选取为：in_dim
     """
-    def __init__(self,in_dim,out_dim ):
+    def __init__(self,in_dim,out_dim):
         super(Self_Attn_Channel,self).__init__()
         self.chanel_in = in_dim
         self.out_dim = out_dim
+        
+        if self.out_dim < 1:
+            self.out_dim = 1
  
-        self.query_conv = nn.Conv2d(in_channels = in_dim , out_channels = out_dim , kernel_size= 1)
-        self.key_conv = nn.Conv2d(in_channels = in_dim , out_channels = out_dim , kernel_size= 1)
-        self.value_conv = nn.Conv2d(in_channels = in_dim , out_channels = out_dim , kernel_size= 1)
-        self.x_conv = nn.Conv2d(in_channels = in_dim , out_channels = out_dim , kernel_size= 1)
+        self.query_conv = nn.Conv2d(in_channels = in_dim , out_channels = self.out_dim , kernel_size= 1)
+        self.key_conv = nn.Conv2d(in_channels = in_dim , out_channels = self.out_dim , kernel_size= 1)
+        self.value_conv = nn.Conv2d(in_channels = in_dim , out_channels = self.out_dim , kernel_size= 1)
+        self.x_conv = nn.Conv2d(in_channels = in_dim , out_channels = self.out_dim , kernel_size= 1)
         self.gamma = nn.Parameter(torch.zeros(1))
  
         self.softmax  = nn.Softmax(dim=-1)
@@ -548,9 +671,9 @@ class Self_Attn_Channel(nn.Module):
         out = out.view(m_batchsize,self.out_dim, width,height) #B X C1 X W X H
         
         #跨连，Gamma是需要学习的参数
-        out = self.gamma*out + self.x_conv(x) #B X C1 X W X H
+        # out = self.gamma*out + self.x_conv(x) #B X C1 X W X H
         
-        return out,attention
+        return out
 
 # x = torch.randn(size = (4,8,20,20))  
 # self_atten_channel = Self_Attn_Channel(8, 8)
@@ -691,11 +814,11 @@ class NonLocalBlockND(nn.Module):
         y = y.view(size)  #size = [B,N,C1,x.size()[2:]] 
         
         W_y = self.W(y)  #1 × 1 卷积 size = x.size()
-        z = W_y + x  #残差连接
-        return z 
+        # z = W_y + x  #残差连接
+        return W_y
 
-# x = torch.randn(size = (4,16,20,20))  
-# non_local = NonLocalBlockND(16,inter_channels = 8,dimension = 2)
+# x = torch.randn(size = (4,1,20,20))  
+# non_local = NonLocalBlockND(1,inter_channels = 8,dimension = 2)
 # y = non_local(x)
 # print('y.size:',y.size())
 
@@ -764,7 +887,7 @@ class DANet(nn.Module):
         
         self.in_dim = in_dim
         self.ca = CAM_Module(self.in_dim)
-        self.sa = Self_Attn_Spatial(self.in_dim, self.in_dim // 4)
+        self.sa = Self_Attn_Spatial(self.in_dim, self.in_dim // 2)
         
     def forward(self, x):
         
@@ -776,8 +899,8 @@ class DANet(nn.Module):
         return y
         
         
-# x = torch.randn(size = (4,16,20,20))  
-# Danet = DANet(16)
+# x = torch.randn(size = (4,1,20,20))  
+# Danet = DANet(1)
 # y = Danet(x)
 # print('y.size:',y.size())       
         
@@ -850,7 +973,13 @@ class GCNet_Atten(torch.nn.Module):
         else: 
             y = X * torch.sigmoid(context)
         
-        return y         
+        return y     
+
+# x = torch.randn(size = (4,1,20,20))  
+# Danet = GCNet_Atten(1)
+# y = Danet(x)
+# print('y.size:',y.size())      
+# print(y.max())
 
 #%%
 
@@ -867,17 +996,23 @@ def INF(B,H,W):
 
 class CC_module(nn.Module):
     
+    '''
+    Parameters
+    ----------
+    in_dim : int
+        channels of input
+    '''
+    
     def __init__(self,in_dim):
-        '''
-        Parameters
-        ----------
-        in_dim : int
-            channels of input
-     	device: torch.device
-        '''
         super(CC_module, self).__init__()
-        self.query_conv = nn.Conv2d(in_channels=in_dim, out_channels=in_dim//8, kernel_size=1)
-        self.key_conv = nn.Conv2d(in_channels=in_dim, out_channels=in_dim//8, kernel_size=1)
+        
+        if in_dim <= 4:
+            out_channels = 1
+        else:
+            out_channels = in_dim // 4
+        
+        self.query_conv = nn.Conv2d(in_channels=in_dim, out_channels= out_channels, kernel_size=1)
+        self.key_conv = nn.Conv2d(in_channels=in_dim, out_channels= out_channels, kernel_size=1)
         self.value_conv = nn.Conv2d(in_channels=in_dim, out_channels=in_dim, kernel_size=1)
         self.softmax = nn.Softmax(dim=3)
         self.INF = INF
@@ -932,11 +1067,13 @@ class CC_module(nn.Module):
         out_W = out_W.view(m_batchsize,height,-1,width).permute(0,2,1,3) #size = (b,c1,h,w)
         #print(out_H.size(),out_W.size())
         
-        return self.gamma*(out_H + out_W) + x 
+        return self.gamma*(out_H + out_W)
     
-# model = CC_module(8)
+# model = CC_module1(8)
 # x = torch.randn(4, 8, 20, 20)
 # out = model(x)
 # print(out.shape)   
+
+# print(out.max())
 
 #%%
