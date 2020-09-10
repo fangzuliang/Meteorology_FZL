@@ -1,24 +1,24 @@
 # -*- coding: utf-8 -*-
 """
 Created on Mon Jul 27 15:11:52 2020
-
+'''
+输入测试数据的Dataloader + 加载了参数的模型 ：输出在某些特定评价指标下的模型得分
+'''
 @author: fzl
 """
 
 import os
-
-import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader
-import Radar_utils 
 import matplotlib.pyplot as plt
 import numpy as np 
 import pandas as pd
+import torch
 
+import Radar_utils
 
-class model_evaluate():
+class Model_Evaluate():
+    
     '''
-    func: 
+    func: 在指定dataloader_test上对模型适用某种评价指标进行评估.
     Parameters
     ----------
     model: instance of class
@@ -189,7 +189,7 @@ class model_evaluate():
                 obs_img = obs[0,i,:,:]*self.scale
                 pre_img = pre[0,i,:,:]*self.scale                
                 # hits, misses, falsealarms, correctnegatives = Radar_utils.prep_clf(obs_img,pre_img,
-                #                                                                    threshold = threshold)
+                #                                                                     threshold = self.threshold)
                 if self.metric == 'TS':
                     score = Radar_utils.TS(obs_img,pre_img,threshold = self.threshold)
                 elif self.metric == 'MAR':
@@ -224,7 +224,6 @@ class model_evaluate():
             是否在输出对比图的同时，也输出metric，即对应的评价信息
             
         '''
-        batch_nums = self.dataloader_test.__len__()
         max_batch_index = max(which_batch_plot)
         
         for i, (input_x,input_y) in enumerate(self.dataloader_test):
@@ -245,15 +244,9 @@ class model_evaluate():
     def dataloader_metric(self):
         '''
         func: 对整个Dataloader进行综合评分
-        Parameter
-        ----------
-        if_process: bool
-            defualt False, 即默认不对评分做处理，直接输出
-            
         '''
         all_scores = []
         assert self.dataloader_test.batch_size == 1
-        batch_nums = self.dataloader_test.__len__()
         all_scores = []
         for i, (input_x,input_y) in enumerate(self.dataloader_test):
             input_y = input_y.to(self.device)
@@ -288,8 +281,102 @@ class model_evaluate():
         return scores,score_mean
 
 
+    def save_all_metric(self,save_path, 
+                        all_metrics = ['TS','MAR','FAR','POD',
+                                       'BIAS','F1','precision',
+                                       'Single_HSS','MSE','MAE',
+                                       'Multi_HSS']):
+        '''
+        func: 将模型在指定评价指标上的评分和图保存到save_path + '/metric'路径下
+            文件名用str(metric)表示
+        Parameter
+        ---------
+        save_path: str
+            评估结果保存路径
+        all_metrics: list
+            default ['TS','MAR','FAR','POD','BIAS','F1','precision', 'Single_HSS','MSE','MAE', 'Multi_HSS']
+            即使用哪些评价指标进行评估                          
+        '''
+        metric_save_path = save_path + '/metric'
+        if not os.path.exists(metric_save_path):
+            os.makedirs(metric_save_path) 
+        
+        metrics_1 = ['TS','MAR','FAR','POD','BIAS','F1','precision','Single_HSS']
+        metrics_2 = ['MSE','MAE','Multi_HSS']
+        
+        for metric in all_metrics[0:]:
+            if metric in metrics_1:
+                self.metric = metric
+                print(self.metric)
+                f2 = plt.figure(figsize=(10,6))
+                thresholds = [0.1,1,5,10,20,30,40,50]
+                all_scores = []
+                for threshold in thresholds[0:]:
+                    self.threshold = threshold
+                    _, mean_scores = self.score_mean_with_frame(plot=False)
+                    all_scores.append(mean_scores)
+                    plt.plot(mean_scores,'-*',label = str(threshold))
+                    
+                plt.xlabel('Time', fontsize = 20)
+                plt.ylabel('Score', fontsize = 20)
+                xticks = np.arange(len(mean_scores))
+                xtickslabel = np.arange(len(mean_scores))
+                plt.xticks(xticks,xtickslabel,fontsize = 20)
+                plt.yticks(fontsize = 20)
+                if self.metric != 'BIAS':
+                    plt.ylim((0,1))
+                plt.legend()
+            
+                plt.title(self.metric,fontsize = 16)
+                plt.savefig(os.path.join(metric_save_path,metric + '.png'),dpi = 200)
+                plt.show()
+                
+                pd_scores = pd.DataFrame(all_scores,index = thresholds)
+                pd_scores.to_csv(os.path.join(metric_save_path,metric + '.csv'))
+                    
+                f2.clf()
+                
+            elif metric in metrics_2:
+                self.metric = metric
+                print(self.metric)
+                if metric in ['MSE','MAE']:
+                    self.scale = 1
+                else:
+                    self.scale = 80
+                _,mean_scores = self.score_mean_with_frame(plot = False)
+                
+                f2 = plt.figure(figsize=(10,6))
+                plt.plot(mean_scores,'-*',label = self.metric)
+                plt.xlabel('Time', fontsize = 20)
+                plt.ylabel('Score', fontsize = 20)
+                xticks = np.arange(len(mean_scores))
+                xtickslabel = np.arange(len(mean_scores))
+                plt.xticks(xticks,xtickslabel,fontsize = 20)
+                plt.yticks(fontsize = 20)
+                plt.legend()
+                
+                if self.metric == 'Multi_HSS':
+                    plt.ylim((0,1))
+                
+                plt.title(self.metric,fontsize = 16)
+                plt.savefig(os.path.join(metric_save_path,metric + '.png'),dpi = 200)
+                plt.show()
+                
+                pd_scores = pd.DataFrame(mean_scores)
+                pd_scores.to_csv(os.path.join(metric_save_path, self.metric + '.csv'))   
+            
+                f2.clf()
+        
+        return None
+                
 
-
+        
+ 
+        
+        
+    
+        
+        
 
 
 
