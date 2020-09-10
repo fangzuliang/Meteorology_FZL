@@ -8,6 +8,8 @@ Part2: 图片读取，画图, 图片--> 视频。
         image_read_cv(); 读取单张图片
         plot_img();
         compare_obs_pre_img();
+        compose2gif(); 将图片组成成 .gif文件
+        compose2gif_path() ;将图片组成 .gif文件，输入图片列表所在路径即可
         compose_photo2video(); 
         get_sample_data();
 
@@ -234,6 +236,64 @@ def compare_obs_pre_img(obs, pre, index = 0, is_save_file = False, save_path = N
     # plt.show()
     
     return fig
+
+#将图片组成成 .gif文件
+def compose2gif(img_filelist, save_filepath = None, fps = 1):
+    '''
+    func: 将图片组成成 .gif文件
+    Parameter
+    --------
+    img_filelist: list of str
+        图片文件路径+文件名组成的 list
+    save_filepath: str
+        生成的.gif文件的保存路径+文件名
+    fps: float
+        帧率，即每秒闪过几帧图片，默认1
+    Return
+    '''
+
+    gif_images = []
+    for file in img_filelist:
+        gif_images.append(imageio.imread(file))
+        
+    imageio.mimsave(save_filepath,gif_images, fps = 2)
+    
+    return None
+
+def compose2gif_path(img_path,save_filepath = None, img_type = '.png', fps = 1):
+    '''
+    func: 输入图片列表的路径,将图片列表组成成 .gif文件
+    Parameter
+    --------
+    img_path: list of str
+        图片所在路径, eg: F:/caiyun/img_path
+    img_type: str
+        图片格式, 默认'.png'
+    save_filepath: str
+        生成的.gif文件的保存路径+文件名
+    fps: float
+        帧率，即每秒闪过几帧图片，默认2
+    Return
+    '''
+    
+    img_filelist = os.listdir(img_path)    
+    
+    img_filelist = [file for file in img_filelist if img_type in file] #保留所有 '.png' 文件
+
+    #保证文件名格式为：index.png， 其中int(index) = 整数 
+    img_filelist.sort(key=lambda x: int(x.split('.')[0]))  
+    img_filelist = [os.path.join(img_path,file) for file in img_filelist]
+    
+    # print(img_filelist)
+    
+    gif_images = []
+    for file in img_filelist:
+        gif_images.append(imageio.imread(file))
+        
+    imageio.mimsave(save_filepath,gif_images, fps = 2)
+    
+    return None
+
 
 ##读取零散图片(上面分解的图片)，并将其合成视频
 def compose_photo2video(filepath, save_path_name, 
